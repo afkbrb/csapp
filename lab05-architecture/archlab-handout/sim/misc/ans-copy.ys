@@ -1,8 +1,8 @@
 # Execution begins at address 0 
-	.pos 0
-	irmovq stack, %rsp  	# Set up stack pointer
-	call main		# Execute main program
-	halt			# Terminate program 
+    .pos 0
+    irmovq stack, %rsp  	# Set up stack pointer
+    call main		# Execute main program
+    halt			# Terminate program 
 
 .align 8
 # Source block
