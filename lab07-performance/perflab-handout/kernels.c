@@ -86,7 +86,7 @@ void block_16_rotate(int dim, pixel *src, pixel *dst) {
 }
 
 char block_16_unrolling_rotate_descr[] =
-    "block_16_rotate: block 16 unrolling implementation";
+    "block_16_unrolling_rotate: block 16 unrolling implementation";
 void block_16_unrolling_rotate(int dim, pixel *src, pixel *dst) {
     int block = 16;
     for (int i = 0; i < dim; i += block) {
