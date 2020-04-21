@@ -164,7 +164,7 @@ void eval(char *cmdline) {
     char buf[MAXLINE];    // holds modified command line
     int bg;               // Should the job run in bg or fg?
     volatile pid_t pid;   // Process id
-    sigset_t mask_all, mask_one, prev_one;
+    sigset_t mask_all, mask_one, mask_prev;
 
     strcpy(buf, cmdline);
     bg = parseline(buf, argv);
@@ -175,9 +175,9 @@ void eval(char *cmdline) {
         sigemptyset(&mask_one);
         sigaddset(&mask_one, SIGCHLD);
 
-        sigprocmask(SIG_BLOCK, &mask_one, &prev_one);   // block SIGCHLD
-        if ((pid = fork()) == 0) {                      // Child runs user job
-            sigprocmask(SIG_SETMASK, &prev_one, NULL);  // unblock SIGCHLD
+        sigprocmask(SIG_BLOCK, &mask_one, &mask_prev);   // block SIGCHLD
+        if ((pid = fork()) == 0) {                       // Child runs user job
+            sigprocmask(SIG_SETMASK, &mask_prev, NULL);  // unblock SIGCHLD
             // Each child process must have a unique process group ID
             setpgid(0, 0);
             if (execve(argv[0], argv, environ) < 0) {
@@ -188,7 +188,7 @@ void eval(char *cmdline) {
 
         sigprocmask(SIG_BLOCK, &mask_all, NULL);
         addjob(jobs, pid, bg ? BG : FG, cmdline);
-        sigprocmask(SIG_SETMASK, &prev_one, NULL);
+        sigprocmask(SIG_SETMASK, &mask_prev, NULL);
         if (!bg) {
             waitfg(pid);
         } else {
@@ -258,10 +258,15 @@ int parseline(const char *cmdline, char **argv) {
  *    it immediately.
  */
 int builtin_cmd(char **argv) {
+    sigset_t mask_all, mask_prev;
+    sigfillset(&mask_all);
+
     if (strcmp(argv[0], "quit") == 0) {
         exit(0);
     } else if (strcmp(argv[0], "jobs") == 0) {
+        sigprocmask(SIG_BLOCK, &mask_all, &mask_prev);
         listjobs(jobs);
+        sigprocmask(SIG_SETMASK, &mask_prev, NULL);
         return 1;
     } else if (strcmp(argv[0], "fg") == 0 || strcmp(argv[0], "bg") == 0) {
         do_bgfg(argv);
@@ -293,6 +298,10 @@ void do_bgfg(char **argv) {
         t++;
     }
 
+    sigset_t mask_all, mask_prev;
+    sigfillset(&mask_all);
+
+    sigprocmask(SIG_BLOCK, &mask_all, &mask_prev);
     struct job_t *job;
     char *pos = strchr(argv[1], '%');
     if (pos) {
@@ -300,6 +309,7 @@ void do_bgfg(char **argv) {
         job = getjobjid(jobs, jid);
         if (job == NULL) {
             printf("%%%d: No such job\n", jid);
+            sigprocmask(SIG_SETMASK, &mask_prev, NULL);
             return;
         }
     } else {
@@ -307,6 +317,7 @@ void do_bgfg(char **argv) {
         job = getjobpid(jobs, pid);
         if (job == NULL) {
             printf("(%d): No such process\n", pid);
+            sigprocmask(SIG_SETMASK, &mask_prev, NULL);
             return;
         }
     }
@@ -314,10 +325,12 @@ void do_bgfg(char **argv) {
     if (strcmp(argv[0], "bg") == 0) {
         job->state = BG;
         kill(-job->pid, SIGCONT);  // continue to run
+        sigprocmask(SIG_SETMASK, &mask_prev, NULL);
     } else {
         job->state = FG;
         kill(-job->pid, SIGCONT);
-        waitfg(job->pid);
+        sigprocmask(SIG_SETMASK, &mask_prev, NULL);
+        waitfg(job->pid);  // don't block sig while waiting
     }
 }
 
@@ -325,7 +338,15 @@ void do_bgfg(char **argv) {
  * waitfg - Block until process pid is no longer the foreground process
  */
 void waitfg(pid_t pid) {
-    while (pid == fgpid(jobs)) {
+    sigset_t mask_all, mask_prev;
+    sigfillset(&mask_all);
+
+    pid_t t;
+    while (1) {
+        sigprocmask(SIG_BLOCK, &mask_all, &mask_prev);
+        t = fgpid(jobs);
+        sigprocmask(SIG_SETMASK, &mask_prev, NULL);
+        if (t != pid) break;
         sleep(1);
     }
 }
@@ -344,11 +365,12 @@ void waitfg(pid_t pid) {
 void sigchld_handler(int sig) {
     int olderrno = errno;
     int pid;
-    sigset_t mask, prev_mask;
-
-    sigfillset(&mask);
-    sigprocmask(SIG_BLOCK, &mask, &prev_mask);  // block sigs
     int status;
+
+    sigset_t mask_all, mask_prev;
+    sigfillset(&mask_all);
+
+    sigprocmask(SIG_BLOCK, &mask_all, &mask_prev);  // block sigs
     // use "while" instead of "if" to reap all available zombie children
     // NOTICE: waitpid may return -1 if there's no child processes
     while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0) {
@@ -368,7 +390,7 @@ void sigchld_handler(int sig) {
             deletejob(jobs, pid);
         }
     }
-    sigprocmask(SIG_SETMASK, &prev_mask, NULL);  // resotre sigs
+    sigprocmask(SIG_SETMASK, &mask_prev, NULL);  // resotre sigs
     errno = olderrno;
 }
 
@@ -379,15 +401,15 @@ void sigchld_handler(int sig) {
  */
 void sigint_handler(int sig) {
     int olderrno = errno;
-    sigset_t mask, prev_mask;
+    sigset_t mask_all, mask_prev;
+    sigfillset(&mask_all);
 
-    sigfillset(&mask);
-    sigprocmask(SIG_BLOCK, &mask, &prev_mask);  // block sigs
+    sigprocmask(SIG_BLOCK, &mask_all, &mask_prev);  // block sigs
     int t = fgpid(jobs);
     if (t) {
         kill(-t, SIGINT);  // send a SIGKILL to the foreground process group
     }
-    sigprocmask(SIG_SETMASK, &prev_mask, NULL);  // resotre sigs
+    sigprocmask(SIG_SETMASK, &mask_prev, NULL);  // resotre sigs
     errno = olderrno;
 }
 
@@ -398,15 +420,15 @@ void sigint_handler(int sig) {
  */
 void sigtstp_handler(int sig) {
     int olderrno = errno;
-    sigset_t mask, prev_mask;
+    sigset_t mask_all, mask_prev;
+    sigfillset(&mask_all);
 
-    sigfillset(&mask);
-    sigprocmask(SIG_BLOCK, &mask, &prev_mask);  // block sigs
+    sigprocmask(SIG_BLOCK, &mask_all, &mask_prev);  // block sigs
     int t = fgpid(jobs);
     if (t) {
         kill(-t, SIGTSTP);  // send a SIGTSTP to the foreground process group
     }
-    sigprocmask(SIG_SETMASK, &prev_mask, NULL);  // resotre sigs
+    sigprocmask(SIG_SETMASK, &mask_prev, NULL);  // resotre sigs
     errno = olderrno;
 }
 
