@@ -2,11 +2,8 @@
  * next + best fit
  *
  * search the mim qualified block from the last allocated one
- *
+ * 
  * 45 + 40
- *
- * also optimize realloc here, util improved slightly,
- * but the socre didn't change
  */
 #include "mm.h"
 
@@ -42,7 +39,6 @@ team_t team = {
 #define CHUNKSIZE (1 << 12)
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
-#define MIN(x, y) ((x) < (y) ? (x) : (y))
 
 #define PACK(size, alloc) ((size) | (alloc))
 
@@ -208,7 +204,7 @@ void *mm_malloc(size_t size) {
     if (size == 0) return NULL;
 
     if (size <= DSIZE) {
-        asize = 2 * DSIZE;  // header + footer + size + padding
+        asize = 2 * DSIZE;  // header + footer + size
     } else {
         asize = ALIGN(size + DSIZE);
     }
@@ -239,36 +235,15 @@ void mm_free(void *bp) {
 /*
  * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
  */
-void *mm_realloc(void *bp, size_t size) {
-    if (DEBUG) printf("realloc (@%d, %d)\n", OFFSET(bp), size);
+void *mm_realloc(void *ptr, size_t size) {
+    if (DEBUG) printf("realloc (@%d, %d)\n", OFFSET(ptr), size);
     void *newptr;
-    size_t asize;                       // adjustment size
-    size_t csize = GET_SIZE(HDRP(bp));  // current block size
-
-    if (size == 0) return NULL;
-
-    if (size <= DSIZE) {
-        asize = 2 * DSIZE;  // header + footer + size + padding
-    } else {
-        asize = ALIGN(size + DSIZE);
-    }
-
-    if (asize <= csize) {
-        place(bp, asize);
-        return bp;
-    }
-
-    if (!GET_ALLOC(HDRP(NEXT_BLKP(bp))) &&
-        GET_SIZE(HDRP(NEXT_BLKP(bp))) >= asize - csize) {
-        // alloc (asize - csize) from next block
-        place(NEXT_BLKP(bp), asize - csize);
-        PUT(HDRP(bp), PACK(csize + GET_SIZE(HDRP(NEXT_BLKP(bp))), 1));
-        PUT(FTRP(bp), PACK(csize + GET_SIZE(HDRP(NEXT_BLKP(bp))), 1));
-        return bp;
-    }
+    size_t csize;
 
     if ((newptr = mm_malloc(size)) == NULL) return NULL;
-    memcpy(newptr, bp, MIN(size, csize - 2 * WSIZE));
-    mm_free(bp);
+    csize = GET_SIZE(HDRP(ptr));
+    if (size < csize) csize = size;
+    memcpy(newptr, ptr, csize);
+    mm_free(ptr);
     return newptr;
 }

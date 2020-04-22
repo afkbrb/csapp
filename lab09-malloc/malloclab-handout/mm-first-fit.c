@@ -1,12 +1,7 @@
 /*
- * next + best fit
- *
- * search the mim qualified block from the last allocated one
- *
- * 45 + 40
- *
- * also optimize realloc here, util improved slightly,
- * but the socre didn't change
+ * first fi
+ * 
+ * 43 + 11
  */
 #include "mm.h"
 
@@ -42,7 +37,6 @@ team_t team = {
 #define CHUNKSIZE (1 << 12)
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
-#define MIN(x, y) ((x) < (y) ? (x) : (y))
 
 #define PACK(size, alloc) ((size) | (alloc))
 
@@ -63,9 +57,7 @@ team_t team = {
 
 char *heap_listp;
 
-#define OFFSET(bp) ((char *)(bp)-heap_listp)
-
-char *last_allocated_bp = NULL;
+#define OFFSET(bp) ((char *)(bp) - heap_listp)
 
 static void *merge(void *bp) {
     if (DEBUG) printf("merge @%d\n", OFFSET(bp));
@@ -74,30 +66,17 @@ static void *merge(void *bp) {
     size_t size = GET_SIZE(HDRP(bp));
 
     if (prev_alloc && next_alloc) {
-        if (last_allocated_bp == bp) {
-            last_allocated_bp = PREV_BLKP(bp);
-        }
         return bp;
     } else if (prev_alloc && !next_alloc) {
-        if (last_allocated_bp == bp || last_allocated_bp == NEXT_BLKP(bp)) {
-            last_allocated_bp = PREV_BLKP(bp);
-        }
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
         PUT(HDRP(bp), PACK(size, 0));
         PUT(FTRP(bp), PACK(size, 0));
     } else if (!prev_alloc && next_alloc) {
-        if (last_allocated_bp == PREV_BLKP(bp) || last_allocated_bp == bp) {
-            last_allocated_bp = PREV_BLKP(PREV_BLKP(bp));
-        }
         size += GET_SIZE(HDRP(PREV_BLKP(bp)));
         PUT(FTRP(bp), PACK(size, 0));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
     } else {
-        if (last_allocated_bp == PREV_BLKP(bp) || last_allocated_bp == bp ||
-            last_allocated_bp == NEXT_BLKP(bp)) {
-            last_allocated_bp = PREV_BLKP(PREV_BLKP(bp));
-        }
         size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(FTRP(NEXT_BLKP(bp)));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
@@ -123,58 +102,25 @@ static void *extend_heap(size_t words) {
 }
 
 static void *find_fit(size_t asize) {
-    // last_allocated_bp is allocated, so we don't need to check it
-    // char *p = NEXT_BLKP(last_allocated_bp);
-    char *p = last_allocated_bp;
-    char *min_p = NULL;
-    size_t min_size = (size_t)-1;  // the init value is the max sizt_t
-
+    char *p = heap_listp;
     size_t size = GET_SIZE(HDRP(p));
     while (size) {  // search until reach end block
-        if (!GET_ALLOC(HDRP(p)) && size >= asize && size < min_size) {
-            min_size = size;
-            min_p = p;
-        }
+        if (!GET_ALLOC(HDRP(p)) && size >= asize + 2 * WSIZE) return p;
         p = NEXT_BLKP(p);
         size = GET_SIZE(HDRP(p));
-    }
-
-    if (min_p) {
-        last_allocated_bp = min_p;
-        return min_p;
-    }
-
-    p = heap_listp;
-    while (p != last_allocated_bp) {
-        size = GET_SIZE(HDRP(p));
-        if (!GET_ALLOC(HDRP(p)) && size >= asize && size < min_size) {
-            min_size = size;
-            min_p = p;
-        }
-        p = NEXT_BLKP(p);
-    }
-
-    if (min_p) {
-        last_allocated_bp = min_p;
-        return min_p;
     }
 
     return NULL;
 }
 
 static void place(void *bp, size_t asize) {
-    if (DEBUG) printf("place (@%d, %d)\n", OFFSET(bp), asize);
+    if (DEBUG)
+        printf("place (@%d, %d)\n", OFFSET(bp), asize);
     size_t size = GET_SIZE(HDRP(bp));
-    // the threshold is hard coded here
-    if (size - asize <= 2 * WSIZE) {  // use the whole block
-        PUT(HDRP(bp), PACK(size, 1));
-        PUT(FTRP(bp), PACK(size, 1));
-    } else {  // split
-        PUT(HDRP(bp), PACK(asize, 1));
-        PUT(FTRP(bp), PACK(asize, 1));
-        PUT(HDRP(NEXT_BLKP(bp)), PACK(size - asize, 0));
-        PUT(FTRP(NEXT_BLKP(bp)), PACK(size - asize, 0));
-    }
+    PUT(HDRP(bp), PACK(asize, 1));
+    PUT(FTRP(bp), PACK(asize, 1));
+    PUT(HDRP(NEXT_BLKP(bp)), PACK(size - asize, 0));
+    PUT(FTRP(NEXT_BLKP(bp)), PACK(size - asize, 0));
 }
 
 /*
@@ -187,7 +133,6 @@ int mm_init(void) {
     PUT(heap_listp + 2 * WSIZE, PACK(DSIZE, 1));
     PUT(heap_listp + 3 * WSIZE, PACK(0, 1));
     heap_listp += 2 * WSIZE;
-    last_allocated_bp = heap_listp;
 
     if (extend_heap(CHUNKSIZE / WSIZE) == NULL) return -1;
 
@@ -208,7 +153,7 @@ void *mm_malloc(size_t size) {
     if (size == 0) return NULL;
 
     if (size <= DSIZE) {
-        asize = 2 * DSIZE;  // header + footer + size + padding
+        asize = 2 * DSIZE;  // header + footer + size
     } else {
         asize = ALIGN(size + DSIZE);
     }
@@ -239,36 +184,16 @@ void mm_free(void *bp) {
 /*
  * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
  */
-void *mm_realloc(void *bp, size_t size) {
-    if (DEBUG) printf("realloc (@%d, %d)\n", OFFSET(bp), size);
+void *mm_realloc(void *ptr, size_t size) {
+    if (DEBUG)
+        printf("realloc (@%d, %d)\n", OFFSET(ptr), size);
     void *newptr;
-    size_t asize;                       // adjustment size
-    size_t csize = GET_SIZE(HDRP(bp));  // current block size
-
-    if (size == 0) return NULL;
-
-    if (size <= DSIZE) {
-        asize = 2 * DSIZE;  // header + footer + size + padding
-    } else {
-        asize = ALIGN(size + DSIZE);
-    }
-
-    if (asize <= csize) {
-        place(bp, asize);
-        return bp;
-    }
-
-    if (!GET_ALLOC(HDRP(NEXT_BLKP(bp))) &&
-        GET_SIZE(HDRP(NEXT_BLKP(bp))) >= asize - csize) {
-        // alloc (asize - csize) from next block
-        place(NEXT_BLKP(bp), asize - csize);
-        PUT(HDRP(bp), PACK(csize + GET_SIZE(HDRP(NEXT_BLKP(bp))), 1));
-        PUT(FTRP(bp), PACK(csize + GET_SIZE(HDRP(NEXT_BLKP(bp))), 1));
-        return bp;
-    }
+    size_t csize;
 
     if ((newptr = mm_malloc(size)) == NULL) return NULL;
-    memcpy(newptr, bp, MIN(size, csize - 2 * WSIZE));
-    mm_free(bp);
+    csize = GET_SIZE(HDRP(ptr));
+    if (size < csize) csize = size;
+    memcpy(newptr, ptr, csize);
+    mm_free(ptr);
     return newptr;
 }
