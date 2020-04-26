@@ -1,5 +1,5 @@
 /**
- * Cache version.
+ * Sequential proxy without concurrency support and cache support.
  */
 
 #include <stdio.h>
@@ -10,7 +10,6 @@
 #define MAXREQ 8192
 
 typedef struct {
-    char uri[MAXLINE];
     char host[MAXLINE];
     char port[MAXLINE];
     char path[MAXLINE];
@@ -21,74 +20,36 @@ request_t *request_parse(int clientfd);
 int request_send(request_t *requestp);
 void request_free(request_t *requestp);
 
-/********************************* cache ***********************************/
-#define CACHE_BLOCK_COUNT 10
-#define MAX_CACHE_BLOCK_SIZE 102400
-
-typedef struct {
-    char *key;
-    char *value;
-    size_t size;
-    size_t timestamp;
-} cache_block_t;
-
-typedef struct {
-    cache_block_t cache_blocks[CACHE_BLOCK_COUNT];
-} cache_t;
-
-void cache_init(cache_t *cachep);
-cache_block_t *cache_get(cache_t *cachep, char *key);
-void cache_add(cache_t *cachep, char *key, char *value, size_t size);
-
-static unsigned readcnt;
-static sem_t mutex, w;
-
 /********************************* proxy ***********************************/
 
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
 static const char *connection_hdr = "Connection: close\r\n";
 static const char *proxy_connection_hdr = "Proxy-Connection: close\r\n";
 
-size_t timestamp = 0;
-cache_t cache;
-
-void *thread(void *vargp);
 void do_proxy(int clientfd);
-void forward_response(int serverfd, int clientfd, char *uri);
+void forward_response(int serverfd, int clientfd);
 void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg);
 
 int main(int argc, char **argv) {
-    int listenfd, *clientfdp;
+    int listenfd, clientfd;
     socklen_t clientlen;
     struct sockaddr_storage clientaddr;  // Enough space for any address
     char client_hostname[MAXLINE], client_port[MAXLINE];
-    pthread_t tid;
 
     if (argc != 2) {
         fprintf(stderr, "usage: %s <port>\n", argv[0]);
         exit(0);
     }
 
-    cache_init(&cache);
-
     listenfd = Open_listenfd(argv[1]);
     while (1) {
         clientlen = sizeof(struct sockaddr_storage);
-        clientfdp = (int *)Malloc(sizeof(int));
-        *clientfdp = Accept(listenfd, (SA *)&clientaddr, &clientlen);
+        clientfd = Accept(listenfd, (SA *)&clientaddr, &clientlen);
         Getnameinfo((SA *)&clientaddr, clientlen, client_hostname, MAXLINE, client_port, MAXLINE, 0);
         printf("Connected to (%s, %s)\n", client_hostname, client_port);
-        Pthread_create(&tid, NULL, thread, clientfdp);
+        do_proxy(clientfd);
+        Close(clientfd);
     }
-}
-
-void *thread(void *vargp) {
-    int clientfd = *((int *)vargp);
-    Free(vargp);
-    Pthread_detach(pthread_self());
-    do_proxy(clientfd);
-    Close(clientfd);
-    return NULL;
 }
 
 /**
@@ -97,27 +58,18 @@ void *thread(void *vargp) {
  */
 void do_proxy(int clientfd) {
     request_t *requestp;
-
     if ((requestp = request_parse(clientfd)) == NULL) return;
-
-    cache_block_t *cache_blockp = cache_get(&cache, requestp->uri);
-    if (cache_blockp) {
-        Rio_writen(clientfd, cache_blockp->value, cache_blockp->size);  // send cached response
-    } else {
-        int serverfd = request_send(requestp);
-        forward_response(serverfd, clientfd, requestp->uri);
-        Close(serverfd);
-    }
-
+    int serverfd = request_send(requestp);
+    forward_response(serverfd, clientfd);
     request_free(requestp);
+    Close(serverfd);
 }
 
 /**
  * Parse host, port and path from uri.
  */
 static void parse_uri(request_t *requestp, char *uri) {
-    strcpy(requestp->uri, uri);
-
+    strcpy(requestp->port, "80");  // default port
     uri += strlen("http://");
 
     strcpy(requestp->host, uri);
@@ -125,7 +77,6 @@ static void parse_uri(request_t *requestp, char *uri) {
     strcpy(requestp->path, pos);
     *pos = '\0';
 
-    strcpy(requestp->port, "80");  // default port
     char *pos1 = strstr(requestp->host, ":");
     if (pos1) {  // host:port
         strcpy(requestp->port, pos1 + 1);
@@ -155,6 +106,7 @@ static char *parse_headers(rio_t *rp) {
 
 /**
  * Read and parse the request from client.
+ * The request contains server host, the server port, request path and headers.
  * 
  * Return the request pointer.
  * Return NULL if an error occurs.
@@ -166,7 +118,7 @@ request_t *request_parse(int clientfd) {
 
     Rio_readinitb(&rio, clientfd);
     if (!Rio_readlineb(&rio, buf, MAXLINE)) return NULL;  // read the request line
-    sscanf(buf, "%s %s %s", method, uri, version);        // parse the request line
+    sscanf(buf, "%s %s %s", method, uri, version);        // parse request line
     if (strcasecmp(method, "GET")) {                      // only support GET method
         clienterror(clientfd, method, "501", "Not Implemented", "The proxy does not implement this method");
         return NULL;
@@ -219,27 +171,16 @@ void request_free(request_t *requestp) {
 
 /**
  * Forward the response from the server to the client.
- * 
- * Also cache the response if it's not too large.
  */
-void forward_response(int serverfd, int clientfd, char *uri) {
+void forward_response(int serverfd, int clientfd) {
     char buf[MAXLINE];
-    char cache_block[MAX_CACHE_BLOCK_SIZE];
     rio_t rio;
-    size_t size = 0;
 
     Rio_readinitb(&rio, serverfd);
-
-    ssize_t n;
-    while ((n = Rio_readnb(&rio, buf, MAXLINE))) {  // don't use Rio_readlineb here
+    int n;
+    while ((n = Rio_readnb(&rio, buf, MAXLINE))) {
         Rio_writen(clientfd, buf, n);
-        if (size + n <= MAX_CACHE_BLOCK_SIZE) {
-            memcpy(cache_block + size, buf, n);
-        }
-        size += n;
     }
-
-    if (size <= MAX_CACHE_BLOCK_SIZE) cache_add(&cache, uri, cache_block, size);
 }
 
 void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg) {
@@ -262,91 +203,4 @@ void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longms
     Rio_writen(fd, buf, strlen(buf));
     sprintf(buf, "<hr><em>The Tiny Web server</em>\r\n");
     Rio_writen(fd, buf, strlen(buf));
-}
-
-void cache_init(cache_t *cachep) {
-    for (int i = 0; i < CACHE_BLOCK_COUNT; i++) {
-        cachep->cache_blocks[i].key = NULL;
-        cachep->cache_blocks[i].value = NULL;
-        cachep->cache_blocks[i].size = 0;
-        cachep->cache_blocks[i].timestamp = 0;
-    }
-
-    readcnt = 0;
-    Sem_init(&mutex, 0, 1);
-    Sem_init(&w, 0, 1);
-}
-
-cache_block_t *cache_get(cache_t *cachep, char *key) {
-    P(&mutex);
-    readcnt++;
-    if (readcnt == 1) P(&w);
-    V(&mutex);
-
-    for (int i = 0; i < CACHE_BLOCK_COUNT; i++) {
-        if (cachep->cache_blocks[i].key && !strcmp(cachep->cache_blocks[i].key, key)) {
-            printf("cache hit!\n");
-            cachep->cache_blocks[i].timestamp = ++timestamp;
-
-            P(&mutex);
-            readcnt--;
-            if (readcnt == 0) V(&w);
-            V(&mutex);
-
-            return cachep->cache_blocks + i;
-        }
-    }
-
-    P(&mutex);
-    readcnt--;
-    if (readcnt == 0) V(&w);
-    V(&mutex);
-
-    return NULL;
-}
-
-void cache_add(cache_t *cachep, char *key, char *value, size_t size) {
-    P(&w);
-
-    char *value1 = (char *)Malloc(size);
-    memcpy(value1, value, size);
-
-    // check if there is already the same key
-    for (int i = 0; i < CACHE_BLOCK_COUNT; i++) {
-        if (cachep->cache_blocks[i].key && !strcmp(cachep->cache_blocks[i].key, key)) {
-            printf("found the same key %s, replace old value (%ld bytes) with new value (%ld bytes)\n",
-                   key, cachep->cache_blocks[i].size, size);
-            free(cachep->cache_blocks[i].value);
-            cachep->cache_blocks[i].value = value1;
-            cachep->cache_blocks[i].size = size;
-            cachep->cache_blocks[i].timestamp = ++timestamp;
-            V(&w);
-            return;
-        }
-    }
-
-    char *key1 = (char *)Malloc(strlen(key) + 1);
-    strcpy(key1, key);
-
-    // LRU
-    size_t min_timestamp = cachep->cache_blocks[0].timestamp;
-    int min_block_index = 0;
-    for (int i = 0; i < CACHE_BLOCK_COUNT; i++) {
-        if (cachep->cache_blocks[i].timestamp < min_timestamp) {
-            min_timestamp = cachep->cache_blocks[i].timestamp;
-            min_block_index = i;
-        }
-    }
-
-    // evict
-    printf("evict %s -> %ld bytes with %s -> %ld bytes\n",
-           cachep->cache_blocks[min_block_index].key, cachep->cache_blocks[min_block_index].size, key1, size);
-    free(cachep->cache_blocks[min_block_index].key);
-    free(cachep->cache_blocks[min_block_index].value);
-    cachep->cache_blocks[min_block_index].key = key1;
-    cachep->cache_blocks[min_block_index].value = value1;
-    cachep->cache_blocks[min_block_index].size = size;
-    cachep->cache_blocks[min_block_index].timestamp = ++timestamp;
-
-    V(&w);
 }
