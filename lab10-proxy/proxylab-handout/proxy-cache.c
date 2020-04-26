@@ -33,6 +33,9 @@ typedef struct {
 } cache_block_t;
 
 typedef struct {
+    unsigned readcnt;
+    sem_t mutex, w;
+    size_t timestamp;
     cache_block_t cache_blocks[CACHE_BLOCK_COUNT];
 } cache_t;
 
@@ -40,16 +43,12 @@ void cache_init(cache_t *cachep);
 cache_block_t *cache_get(cache_t *cachep, char *key);
 void cache_add(cache_t *cachep, char *key, char *value, size_t size);
 
-static unsigned readcnt;
-static sem_t mutex, w;
-
 /********************************* proxy ***********************************/
 
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
 static const char *connection_hdr = "Connection: close\r\n";
 static const char *proxy_connection_hdr = "Proxy-Connection: close\r\n";
 
-size_t timestamp = 0;
 cache_t cache;
 
 void *thread(void *vargp);
@@ -272,41 +271,42 @@ void cache_init(cache_t *cachep) {
         cachep->cache_blocks[i].timestamp = 0;
     }
 
-    readcnt = 0;
-    Sem_init(&mutex, 0, 1);
-    Sem_init(&w, 0, 1);
+    cachep->timestamp = 0;
+    cachep->readcnt = 0;
+    Sem_init(&cachep->mutex, 0, 1);
+    Sem_init(&cachep->w, 0, 1);
 }
 
 cache_block_t *cache_get(cache_t *cachep, char *key) {
-    P(&mutex);
-    readcnt++;
-    if (readcnt == 1) P(&w);
-    V(&mutex);
+    P(&cachep->mutex);
+    cachep->readcnt++;
+    if (cachep->readcnt == 1) P(&cachep->w);
+    V(&cachep->mutex);
 
     for (int i = 0; i < CACHE_BLOCK_COUNT; i++) {
         if (cachep->cache_blocks[i].key && !strcmp(cachep->cache_blocks[i].key, key)) {
             printf("cache hit!\n");
-            cachep->cache_blocks[i].timestamp = ++timestamp;
+            cachep->cache_blocks[i].timestamp = ++cachep->timestamp;
 
-            P(&mutex);
-            readcnt--;
-            if (readcnt == 0) V(&w);
-            V(&mutex);
+            P(&cachep->mutex);
+            cachep->readcnt--;
+            if (cachep->readcnt == 0) V(&cachep->w);
+            V(&cachep->mutex);
 
             return cachep->cache_blocks + i;
         }
     }
 
-    P(&mutex);
-    readcnt--;
-    if (readcnt == 0) V(&w);
-    V(&mutex);
+    P(&cachep->mutex);
+    cachep->readcnt--;
+    if (cachep->readcnt == 0) V(&cachep->w);
+    V(&cachep->mutex);
 
     return NULL;
 }
 
 void cache_add(cache_t *cachep, char *key, char *value, size_t size) {
-    P(&w);
+    P(&cachep->w);
 
     char *value1 = (char *)Malloc(size);
     memcpy(value1, value, size);
@@ -319,8 +319,8 @@ void cache_add(cache_t *cachep, char *key, char *value, size_t size) {
             free(cachep->cache_blocks[i].value);
             cachep->cache_blocks[i].value = value1;
             cachep->cache_blocks[i].size = size;
-            cachep->cache_blocks[i].timestamp = ++timestamp;
-            V(&w);
+            cachep->cache_blocks[i].timestamp = ++cachep->timestamp;
+            V(&cachep->w);
             return;
         }
     }
@@ -346,7 +346,7 @@ void cache_add(cache_t *cachep, char *key, char *value, size_t size) {
     cachep->cache_blocks[min_block_index].key = key1;
     cachep->cache_blocks[min_block_index].value = value1;
     cachep->cache_blocks[min_block_index].size = size;
-    cachep->cache_blocks[min_block_index].timestamp = ++timestamp;
+    cachep->cache_blocks[min_block_index].timestamp = ++cachep->timestamp;
 
-    V(&w);
+    V(&cachep->w);
 }
